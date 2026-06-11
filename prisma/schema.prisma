@@ -1,0 +1,169 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Workspace — top-level billing / auth unit (one per customer / team)
+// ─────────────────────────────────────────────────────────────────────────────
+model Workspace {
+  id                     String   @id @default(cuid())
+  name                   String
+  slug                   String   @unique
+  plan                   String   @default("free") // free | starter | pro | enterprise
+  email                  String?
+  stripeCustomerId       String?  @unique
+  stripeSubscriptionId   String?  @unique
+  webhookSecret          String?
+  createdAt              DateTime @default(now())
+
+  apiKeys           ApiKey[]
+  schemas           Schema[]
+  extractions       Extraction[]
+  usageRecords      UsageRecord[]
+  webhookDeliveries WebhookDelivery[]
+
+  @@index([slug])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ApiKey — hashed API keys (raw value shown once, never stored)
+// ─────────────────────────────────────────────────────────────────────────────
+model ApiKey {
+  id          String    @id @default(cuid())
+  workspaceId String
+  name        String
+  keyHash     String    @unique
+  keyPrefix   String    @unique
+  lastUsedAt  DateTime?
+  rateLimit   Int       @default(60)   // requests per minute
+  isActive    Boolean   @default(true)
+  isSandbox   Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  extractions Extraction[]
+
+  @@index([workspaceId])
+  @@index([keyPrefix])
+  @@index([isActive])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Schema — JSON Schemas that define extraction output shapes
+// isSystem = true → built-in schemas shipped by Morphex (read-only for users)
+// ─────────────────────────────────────────────────────────────────────────────
+model Schema {
+  id                 String   @id @default(cuid())
+  workspaceId        String?                          // null for system schemas
+  name               String
+  slug               String
+  description        String?
+  category           String?
+  jsonSchema         Json
+  isSystem           Boolean  @default(false)
+  version            Int      @default(1)
+  parentSchemaId     String?                          // null for v1, points to previous version
+  isLatest           Boolean  @default(true)
+  isDeprecated       Boolean  @default(false)
+  deprecationMessage String?
+  createdAt          DateTime @default(now())
+
+  workspace   Workspace?   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  extractions Extraction[]
+  parent      Schema?      @relation("SchemaVersions", fields: [parentSchemaId], references: [id])
+  versions    Schema[]     @relation("SchemaVersions")
+
+  @@unique([workspaceId, slug, version])
+  @@index([workspaceId])
+  @@index([isSystem])
+  @@index([category])
+  @@index([isLatest])
+  @@index([parentSchemaId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Extraction — one structured-data extraction request + result
+// ─────────────────────────────────────────────────────────────────────────────
+model Extraction {
+  id               String   @id @default(cuid())
+  workspaceId      String
+  schemaId         String?  // null when caller passes inline schema
+  inlineSchema     Json?    // stored when schemaId is null
+  apiKeyId         String
+  inputText        String   @db.Text
+  inputType        String   @default("text")
+  result           Json?
+  confidence       Float?
+  fieldConfidences Json?
+  warnings         Json?    // String[]
+  status           String   @default("queued") // queued | processing | completed | failed
+  model            String?
+  modelUsed        String?  // actual model used — drives per-model cost calculation
+  inputTokens      Int?
+  outputTokens     Int?
+  processingMs     Int?
+  webhookUrl       String?
+  webhookStatus    String?  // pending | delivered | failed
+  isSandbox        Boolean  @default(false)
+  errorMessage     String?  @db.Text
+  createdAt        DateTime @default(now())
+
+  workspace        Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  schema           Schema?           @relation(fields: [schemaId], references: [id])
+  apiKey           ApiKey            @relation(fields: [apiKeyId], references: [id])
+  webhookDeliveries WebhookDelivery[]
+
+  @@index([workspaceId])
+  @@index([schemaId])
+  @@index([apiKeyId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WebhookDelivery — one record per delivery attempt (log never deleted)
+// ─────────────────────────────────────────────────────────────────────────────
+model WebhookDelivery {
+  id            String    @id @default(cuid())
+  extractionId  String
+  workspaceId   String
+  url           String
+  payload       Json
+  status        String    @default("pending")  // pending | success | failed
+  httpStatus    Int?
+  responseBody  String?   @db.Text
+  attemptNumber Int       @default(1)
+  deliveredAt   DateTime?
+  createdAt     DateTime  @default(now())
+
+  extraction Extraction @relation(fields: [extractionId], references: [id], onDelete: Cascade)
+  workspace  Workspace  @relation(fields: [workspaceId],  references: [id], onDelete: Cascade)
+
+  @@index([extractionId])
+  @@index([workspaceId])
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UsageRecord — daily rollup per workspace for billing and dashboards
+// ─────────────────────────────────────────────────────────────────────────────
+model UsageRecord {
+  id               String   @id @default(cuid())
+  workspaceId      String
+  date             DateTime @db.Date
+  extractionCount  Int      @default(0)
+  tokenCount       Int      @default(0)
+  cost             Float    @default(0)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, date])
+  @@index([workspaceId])
+  @@index([date])
+}
