@@ -225,18 +225,6 @@ npm run seed
 
 ---
 
-## Hosted Service
-
-Don't want to manage infrastructure? **[morphex.dev](https://morphex.dev)** offers the fully managed version with:
-
-- Managed PostgreSQL, Redis, and Claude API usage
-- Pre-configured system schemas ready to use
-- Usage dashboard with per-schema cost breakdown
-- Webhook delivery monitoring
-- Email support
-
----
-
 ## Tech Stack
 
 | Layer | Technology |
